@@ -2,7 +2,7 @@
 import ipaddress,json,os,socket,ssl,time
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from urllib.request import urlopen,Request
-PORT=int(os.getenv('PROBE_PORT','8787')); TIMEOUT=float(os.getenv('PROBE_TIMEOUT_MS','2500'))/1000; MAX_BATCH=int(os.getenv('PROBE_MAX_BATCH','128'))
+PROBE_TOKEN=os.getenv('PROBE_TOKEN',''); PORT=int(os.getenv('PROBE_PORT','8787')); TIMEOUT=float(os.getenv('PROBE_TIMEOUT_MS','2500'))/1000; MAX_BATCH=int(os.getenv('PROBE_MAX_BATCH','128'))
 req=Request('https://www.cloudflare.com/ips-v4',headers={'User-Agent':'cf-probe/1.0'})
 with urlopen(req,timeout=15) as r: NETS=[ipaddress.ip_network(x.strip()) for x in r.read().decode().splitlines() if x.strip()]
 def allowed(ip):
@@ -26,6 +26,7 @@ class H(BaseHTTPRequestHandler):
         self.out(200,{'ok':True,'probe':os.getenv('PROBE_NAME','unknown')}) if self.path=='/health' else self.out(404,{'error':'not_found'})
     def do_POST(self):
         if self.path!='/scan': return self.out(404,{'error':'not_found'})
+        if PROBE_TOKEN and self.headers.get('Authorization') != 'Bearer '+PROBE_TOKEN: return self.out(401,{'error':'unauthorized'})
         try:
             n=int(self.headers.get('Content-Length','0'))
             if n>65536: raise ValueError('request too large')
