@@ -7,7 +7,7 @@
 - `results/all.txt` — 全部通过测试的优选 IP
 - `results/443.txt` — 443 端口结果
 - `results/ctcc.txt` — 电信结果（当前 GitHub Runner 测试池）
-- `results/cuсc.txt` — 联通结果（当前 GitHub Runner 测试池）
+- `results/cucc.txt` — 联通结果（当前 GitHub Runner 测试池）
 - `results/cmcc.txt` — 移动结果（当前 GitHub Runner 测试池）
 
 > GitHub-hosted Runner 本身不位于中国三网，因此不能把它测出的结果冒充中国电信/联通/移动本地实测。三网文件目前采用同一基础质量池，为后续接入中国境内探针保留接口。
@@ -27,9 +27,9 @@
 
 启用 Pages 后：
 
-`https://Mk8gg.github.io/test/results/all.txt`
+`https://Mk8gg.github.io/test/all.txt`
 
-具体 Pages 地址以仓库设置显示为准。
+启用 GitHub Pages（Source 选择 GitHub Actions）后，结果文件会直接位于 Pages 根路径。
 
 ## 配置
 
