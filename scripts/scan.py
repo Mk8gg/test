@@ -35,7 +35,9 @@ def local_scan(candidates):
     return sorted(r,key=lambda x:(x["score"],x["tcp_ms"]))
 
 def remote_scan(url,candidates):
-    r=requests.post(url.rstrip("/")+"/scan",json={"ips":[str(x) for x in candidates],"port":PORT},timeout=300)
+    token=os.getenv("PROBE_TOKEN","")
+    headers={"Authorization":"Bearer "+token} if token else {}
+    r=requests.post(url.rstrip("/")+"/scan",json={"ips":[str(x) for x in candidates],"port":PORT},headers=headers,timeout=300)
     r.raise_for_status(); return r.json().get("results",[])
 
 def write_list(name,results):
