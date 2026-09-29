@@ -1,93 +1,64 @@
 #!/usr/bin/env python3
-import concurrent.futures
-import ipaddress
-import os
-import socket
-import ssl
-import time
+import concurrent.futures, ipaddress, json, os, socket, ssl, time
 from pathlib import Path
-
 import requests
 
-PORT = int(os.getenv("PORT", "443"))
-TOP_N = int(os.getenv("TOP_N", "50"))
-TIMEOUT = float(os.getenv("TIMEOUT_MS", "2500")) / 1000
-MAX_IPS_PER_CIDR = int(os.getenv("MAX_IPS_PER_CIDR", "256"))
-OUT = Path("results")
-OUT.mkdir(parents=True, exist_ok=True)
-
-CF_RANGES_URL = "https://www.cloudflare.com/ips-v4"
+PORT=int(os.getenv("PORT","443")); TOP_N=int(os.getenv("TOP_N","50"))
+TIMEOUT=float(os.getenv("TIMEOUT_MS","2500"))/1000
+MAX_IPS_PER_CIDR=int(os.getenv("MAX_IPS_PER_CIDR","128")); OUT=Path("results"); OUT.mkdir(exist_ok=True)
+CF_RANGES_URL="https://www.cloudflare.com/ips-v4"
 
 def get_ranges():
-    r = requests.get(CF_RANGES_URL, timeout=15)
-    r.raise_for_status()
+    r=requests.get(CF_RANGES_URL,timeout=15); r.raise_for_status()
     return [x.strip() for x in r.text.splitlines() if x.strip()]
 
 def expand_network(cidr):
-    net = ipaddress.ip_network(cidr)
-    hosts = list(net.hosts())
-    if len(hosts) <= MAX_IPS_PER_CIDR:
-        return hosts
-    # Evenly sample a CIDR instead of scanning millions of addresses.
-    step = max(1, len(hosts) // MAX_IPS_PER_CIDR)
-    return hosts[::step][:MAX_IPS_PER_CIDR]
+    net=ipaddress.ip_network(cidr); hosts=list(net.hosts())
+    if len(hosts)<=MAX_IPS_PER_CIDR: return hosts
+    step=max(1,len(hosts)//MAX_IPS_PER_CIDR); return hosts[::step][:MAX_IPS_PER_CIDR]
 
 def test_ip(ip):
-    start = time.perf_counter()
     try:
-        with socket.create_connection((str(ip), PORT), timeout=TIMEOUT):
-            tcp_ms = (time.perf_counter() - start) * 1000
+        t=time.perf_counter()
+        with socket.create_connection((str(ip),PORT),timeout=TIMEOUT): tcp=(time.perf_counter()-t)*1000
+        ctx=ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE
+        t=time.perf_counter()
+        with socket.create_connection((str(ip),PORT),timeout=TIMEOUT) as raw:
+            with ctx.wrap_socket(raw,server_hostname="speed.cloudflare.com"): pass
+        tls=(time.perf_counter()-t)*1000
+        return {"ip":str(ip),"tcp_ms":round(tcp,2),"tls_ms":round(tls,2),"score":round(tcp+tls,2)}
+    except Exception: return None
 
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        tls_start = time.perf_counter()
-        with socket.create_connection((str(ip), PORT), timeout=TIMEOUT) as raw:
-            with ctx.wrap_socket(raw, server_hostname="speed.cloudflare.com"):
-                tls_ms = (time.perf_counter() - tls_start) * 1000
+def local_scan(candidates):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=64) as p:
+        r=[x for x in p.map(test_ip,candidates) if x]
+    return sorted(r,key=lambda x:(x["score"],x["tcp_ms"]))
 
-        return {
-            "ip": str(ip),
-            "tcp_ms": round(tcp_ms, 2),
-            "tls_ms": round(tls_ms, 2),
-            "score": round(tcp_ms + tls_ms, 2),
-        }
-    except Exception:
-        return None
+def remote_scan(url,candidates):
+    r=requests.post(url.rstrip("/")+"/scan",json={"ips":[str(x) for x in candidates],"port":PORT},timeout=300)
+    r.raise_for_status(); return r.json().get("results",[])
+
+def write_list(name,results):
+    results=sorted(results,key=lambda x:(x["score"],x["tcp_ms"]))[:TOP_N]
+    lines=[str(x["ip"])+":"+str(PORT)+"#CF-Best | "+name+" | "+str(round(x["tcp_ms"]))+"ms" for x in results]
+    (OUT/(name+".txt")).write_text("\n".join(lines)+("\n" if lines else ""),encoding="utf-8")
+    return results
 
 def main():
-    ranges = get_ranges()
-    candidates = []
-    for cidr in ranges:
-        candidates.extend(expand_network(cidr))
+    candidates=[ip for cidr in get_ranges() for ip in expand_network(cidr)]
+    print("Testing",len(candidates),"sampled Cloudflare IPv4 addresses...")
+    global_results=local_scan(candidates); write_list("all",global_results)
+    probes=json.loads(os.getenv("PROBES_JSON","{}") or "{}")
+    raw={"global":global_results[:TOP_N]}
+    for name in ("ctcc","cucc","cmcc"):
+        url=probes.get(name)
+        if not url:
+            (OUT/(name+".txt")).write_text("",encoding="utf-8"); continue
+        try:
+            r=remote_scan(url,candidates); write_list(name,r); raw[name]=sorted(r,key=lambda x:x["score"])[:TOP_N]
+            print(name,":",len(r),"successful results")
+        except Exception as e:
+            print(name,": probe failed:",e); (OUT/(name+".txt")).write_text("",encoding="utf-8"); raw[name]=[]
+    (OUT/"raw.json").write_text(json.dumps(raw,ensure_ascii=False,indent=2),encoding="utf-8")
 
-    print(f"Testing {len(candidates)} sampled Cloudflare IPv4 addresses...")
-
-    results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=64) as pool:
-        for result in pool.map(test_ip, candidates):
-            if result:
-                results.append(result)
-
-    results.sort(key=lambda x: (x["score"], x["tcp_ms"]))
-    results = results[:TOP_N]
-
-    lines = [f'{x["ip"]}:{PORT}#CF-Best | {x["tcp_ms"]:.0f}ms' for x in results]
-
-    (OUT / "all.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-    (OUT / "443.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-
-    # Placeholder until real China Telecom/Unicom/Mobile probes are connected.
-    for name in ("ctcc.txt", "cucc.txt", "cmcc.txt"):
-        (OUT / name).write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-
-    (OUT / "raw.json").write_text(
-        __import__("json").dumps(results, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
-
-    print(f"Successful: {len(results)}")
-    print("\n".join(lines))
-
-if __name__ == "__main__":
-    main()
+if __name__=="__main__": main()
